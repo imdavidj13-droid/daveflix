@@ -47,9 +47,31 @@ Install Tailscale and sign in to the same private network on each device you wan
 
 ## 4. Connect and watch
 
-Open the Cloudflare DAVEFLIX website. Click Connect PC. Enter the Tailscale HTTPS server address and the pairing key printed by the Python server. After connecting, enter the folder path ON YOUR PC, for example D:\Videos, and scan. Connection credentials are stored in browser sessionStorage for that tab; reconnect in a new session. Settings gear opens connection settings; Manage library opens folder scanning. Disconnect clears credentials from the current tab.
+Open the Cloudflare DAVEFLIX website. Click Connect PC. Enter the Tailscale HTTPS server address and the pairing key printed by the Python server. After connecting, enter the folder path ON YOUR PC, for example D:\Videos, and scan. Tick **Remember this device** on your own device to retain its server address and pairing key across browser sessions. Leave it unticked for tab-only storage. If your PC is offline, DAVEFLIX retries every ten seconds while the page is visible and reconnects when it becomes available. Incorrect keys stop retries and prompt you to update the connection. Settings gear opens connection settings; Manage library opens folder scanning. Disconnect forgets both the remembered connection and the current tab connection. Clearing browser site data also removes remembered connections. Only use Remember this device on trusted devices: the pairing key grants full access to your library.
 
 If Windows or your browser asks permission for the website to connect to your private network, allow it for your DAVEFLIX website. If connecting fails, check Tailscale, the Python window, the exact allowed website URL, and the pairing key. This cross-origin private-network connection still needs testing in your browser on Windows; browser policy can affect access.
+
+## Start automatically with Windows (one-time setup)
+
+Once your website and PC connection are working, run this in PowerShell:
+
+```powershell
+Set-Location D:\DAVEFLIX
+git pull --ff-only
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\ENABLE_AUTOSTART.ps1
+```
+
+This creates a shortcut in your own Windows Startup folder, pointing to the installed pythonw.exe and server.py --background. No administrator account or password is required. The server starts silently at your next Windows sign-in, without opening a browser. It does not start before sign-in. Keep your current server running for this session. Tailscale must also start with Windows and remain signed in. Tailscale Serve's existing --bg configuration is retained; do not recreate it daily.
+
+Then connect once on the online website and tick Remember this device. On later visits, just open the website. Your PC must be awake and signed in. Private browsing or clearing site data requires pairing again. The installer does not change your pairing key, video library or watch history. Moving this repository or uninstalling Python requires running the installer again. Background startup errors go to server.log, without pairing-key output or media URL query strings.
+
+To remove automatic startup:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File D:\DAVEFLIX\DISABLE_AUTOSTART.ps1
+```
+
+This removes the shortcut; an already running server is left running.
 
 ## Supported files and features
 
@@ -64,9 +86,10 @@ The database daveflix.db, connection.json and pairing.key stay on the PC and are
 ```powershell
 python -m unittest discover -s tests -v
 node --check public/app.js
+node --test tests/test_connection.cjs
 ```
 
-Automated tests cover unauthorized access, origin restrictions, CORS preflight, library reading, partial video responses and saved progress. Cloudflare deployment, Tailscale pairing, Windows launch and actual browser codec playback require end-to-end verification on your devices.
+Automated tests cover unauthorized access, origin restrictions, CORS preflight, library reading, partial video responses, saved progress, remembered connections, session-only connections, disconnect, blocked browser storage, offline retry and invalid-key handling. Windows Startup shortcut execution must be verified on Windows. Cloudflare deployment, Tailscale pairing, Windows launch and actual browser codec playback require end-to-end verification on your devices.
 
 ## References
 

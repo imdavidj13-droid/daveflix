@@ -93,7 +93,7 @@ class Handler(BaseHTTPRequestHandler):
      if not f.is_file(): return self.send_error(404)
     return self.file(f)
    except (ValueError,FileNotFoundError): return self.send_error(404)
-  if route in ('/','/app.js','/style.css'): return self.file(ROOT/'public'/('index.html' if route=='/' else route[1:]))
+  if route in ('/','/app.js','/connection-store.js','/style.css'): return self.file(ROOT/'public'/('index.html' if route=='/' else route[1:]))
   self.send_error(404)
  def file(self,p):
   size=p.stat().st_size; start=0; end=size-1; partial=False
@@ -124,9 +124,15 @@ if __name__=='__main__':
   if u.scheme!='https' or not u.netloc or u.path or u.query or u.fragment or u.username:
    raise SystemExit('Enter only the HTTPS website origin, for example https://daveflix.example.workers.dev')
   CONFIG.write_text(json.dumps({'website_origin':origin},indent=2))
+ if '--background' in sys.argv:
+  log=(ROOT/'server.log').open('a',buffering=1,encoding='utf-8')
+  sys.stdout=log;sys.stderr=log
  connection_init(); init()
+ # Bind before announcing startup, so a second instance cannot appear healthy.
+ try: http=ThreadingHTTPServer(('127.0.0.1',8787),Handler)
+ except OSError as error: raise SystemExit('DAVEFLIX could not start. Port 8787 may already be in use: '+str(error))
  print('DAVEFLIX PC server: http://127.0.0.1:8787')
- print('Pairing key (keep private): '+TOKEN)
+ if '--background' not in sys.argv: print('Pairing key (keep private): '+TOKEN)
  print('Keep this window open while watching.')
- webbrowser.open('http://127.0.0.1:8787')
- ThreadingHTTPServer(('127.0.0.1',8787),Handler).serve_forever()
+ if '--background' not in sys.argv: webbrowser.open('http://127.0.0.1:8787')
+ http.serve_forever()

@@ -17,3 +17,5 @@ pairing.key
 connection.json
 node_modules/
 .wrangler/
+
+server.log

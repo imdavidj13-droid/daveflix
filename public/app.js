@@ -1,10 +1,22 @@
 const $=s=>document.querySelector(s);let items=[],tab='all',current=null,lastSave=0;
 const localHost=['127.0.0.1','localhost'].includes(location.hostname);
-let serverUrl=sessionStorage.getItem('daveflix-server')||(localHost?location.origin:''),pairingKey=sessionStorage.getItem('daveflix-key')||'';
+const connectionStore=DaveflixConnectionStore({getItem:key=>localStorage.getItem(key),setItem:(key,value)=>localStorage.setItem(key,value),removeItem:key=>localStorage.removeItem(key)},{getItem:key=>sessionStorage.getItem(key),setItem:(key,value)=>sessionStorage.setItem(key,value),removeItem:key=>sessionStorage.removeItem(key)});
+const previousConnection=connectionStore.read();
+let serverUrl=previousConnection?.url||(localHost?location.origin:''),pairingKey=previousConnection?.key||'';
+let connected=false,reconnectTimer=null,reconnecting=false,connectionGeneration=0;
+function scheduleReconnect(){clearTimeout(reconnectTimer);if(!serverUrl||!pairingKey)return;reconnectTimer=setTimeout(reconnect,10000)}
+async function reconnect(){
+ if(reconnecting||connected||!serverUrl||!pairingKey||document.hidden)return scheduleReconnect();
+ reconnecting=true;
+ try{await load()}catch(e){if(e.stale)return;if(e.status===401||e.status===403){clearTimeout(reconnectTimer);disconnected(e.message+' Open connection settings to update it.');return}disconnected('Waiting for your PC. DAVEFLIX will reconnect automatically when it is available.');scheduleReconnect()}finally{reconnecting=false}
+}
+function checkConnection(){if(!connected&&serverUrl&&pairingKey){clearTimeout(reconnectTimer);reconnect()}}
+window.addEventListener('online',checkConnection);
+document.addEventListener('visibilitychange',()=>{if(!document.hidden)checkConnection()});
 function mediaUrl(path){return serverUrl+path+'?key='+encodeURIComponent(pairingKey)}
-function openConnection(){ $('#server-url').value=serverUrl;$('#pairing-key').value=pairingKey;if(!$('#connection').open)$('#connection').showModal() }
+function openConnection(){ $('#server-url').value=serverUrl;$('#pairing-key').value=pairingKey;$('#remember-device').checked=connectionStore.read()?.remembered||false;if(!$('#connection').open)$('#connection').showModal() }
 function disconnected(message='Your PC is disconnected. Start its server, then connect to your collection.'){
- items=[];render();$('#collection').innerHTML='<div class="empty"><h2>Connect to your collection</h2><p>'+esc(message)+'</p><button id="reconnect" class="primary">Connect PC</button></div>';$('#reconnect').onclick=openConnection;
+ connected=false;items=[];render();$('#collection').innerHTML='<div class="empty"><h2>Connect to your collection</h2><p>'+esc(message)+'</p><button id="reconnect" class="primary">Connect PC</button></div>';$('#reconnect').onclick=openConnection;
  $('#hero-actions').innerHTML='<button id="hero-connect" class="primary">Connect PC</button>';$('#hero-connect').onclick=openConnection;
 }
 const esc=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -12,9 +24,9 @@ async function api(url,data){
  if(!serverUrl||!pairingKey)throw Error('Connect your PC using its address and pairing key.');
  let r;
  try {r=await fetch(serverUrl+url,{method:data?'POST':'GET',headers:{'Authorization':'Bearer '+pairingKey,...(data?{'Content-Type':'application/json'}:{})},...(data?{body:JSON.stringify(data)}:{}),signal:AbortSignal.timeout(url==='/api/scan'?300000:15000)});}catch(e){throw Error('PC unreachable. Check the server is running, Tailscale is connected, and your website URL is configured on the PC.');}
- let j=await r.json();if(!r.ok)throw Error(j.error||'Request failed');return j;
+ let j=await r.json();if(!r.ok){let error=Error(j.error||'Request failed');error.status=r.status;throw error}return j;
 }
-async function load(){let j=await api('/api/library');items=j.items;$('#folder').value=j.folder;render()}
+async function load(){let generation=connectionGeneration;let j=await api('/api/library');if(generation!==connectionGeneration){let error=Error('Connection changed');error.stale=true;throw error}connected=true;clearTimeout(reconnectTimer);items=j.items;$('#folder').value=j.folder;render()}
 function groups(list){let seen=new Set;return list.filter(x=>!x.series||!seen.has(x.series)&&seen.add(x.series))}
 function card(x){let tone=['#553047','#234c50','#6d3529','#313c65','#5a502d'][x.id%5];return `<button class="card" data-id="${x.id}"><div class="art" style="--tone:${tone}"><span>${esc(x.series||x.title)}</span></div><strong>${esc(x.series||x.title)}</strong><span class="meta">${x.series?'Series · '+items.filter(y=>y.series===x.series).length+' episodes':'Film · Your collection'}</span>${x.position>0&&x.duration?`<div class="progress"><i style="width:${Math.min(100,x.position/x.duration*100)}%"></i></div>`:''}</button>`}
 function row(title,list){return list.length?`<section class="row"><h2>${esc(title)}</h2><div class="rail">${list.map(card).join('')}</div></section>`:''}
@@ -27,6 +39,6 @@ function nextEpisode(){if(!current?.series)return null;let eps=items.filter(x=>x
 function play(x){current=x;lastSave=0;let v=$('#player');$('#playing-title').textContent=x.title;$('#play-error').textContent='';$('#next').hidden=true;v.innerHTML=`<track kind="subtitles" src="${esc(mediaUrl('/subtitle/'+x.id))}" srclang="en" label="English">`;v.src=mediaUrl('/stream/'+x.id);v.onloadedmetadata=()=>{if(x.position&&x.position<v.duration-10)v.currentTime=x.position};if(!$('#player-dialog').open)$('#player-dialog').showModal();v.play().catch(()=>{})}
 async function saveProgress(){if(!current)return;let v=$('#player');if(!Number.isFinite(v.duration))return;current.position=v.currentTime;current.duration=v.duration;try{await api('/api/update',{id:current.id,position:v.currentTime,duration:v.duration})}catch(e){$('#play-error').textContent='Progress could not be saved: '+e.message}}
 $('#player').ontimeupdate=()=>{if(Date.now()-lastSave>5000){lastSave=Date.now();saveProgress()}};$('#player').onpause=saveProgress;$('#player').onerror=()=>{$('#play-error').textContent='Your browser could not play this file. Convert it to MP4 with H.264 video and AAC audio, then rescan your folder.'};$('#player').onended=async()=>{await saveProgress();if(nextEpisode()){$('#next').hidden=false;$('#next').focus()}};$('#next').onclick=()=>{let n=nextEpisode();if(n)play(n)};$('#close-player').onclick=()=>$('#player-dialog').close();$('#player-dialog').addEventListener('close',()=>{$('#player').pause();saveProgress();render()});$('#close-connection').onclick=()=>$('#connection').close();
-$('#disconnect').onclick=()=>{$('#player').pause();$('#player').removeAttribute('src');current=null;serverUrl='';pairingKey='';sessionStorage.removeItem('daveflix-server');sessionStorage.removeItem('daveflix-key');$('#connection').close();disconnected()};
-$('#connection-form').onsubmit=async e=>{e.preventDefault();let oldUrl=serverUrl,oldKey=pairingKey;try{let u=new URL($('#server-url').value);if(u.protocol!=='https:'&&!(localHost&&u.protocol==='http:'&&['127.0.0.1','localhost'].includes(u.hostname)))throw Error('Use an HTTPS PC address.');if(u.username||u.password||u.search||u.hash||!['','/'].includes(u.pathname))throw Error('Enter only the server address, with no path.');serverUrl=u.origin;pairingKey=$('#pairing-key').value.trim();$('#connection-status').textContent='Connecting…';await load();sessionStorage.setItem('daveflix-server',serverUrl);sessionStorage.setItem('daveflix-key',pairingKey);$('#connection-status').textContent='Connected.';$('#connection').close();if(!items.length)openSetup()}catch(e){serverUrl=oldUrl;pairingKey=oldKey;$('#connection-status').textContent=e.message}};
-if(serverUrl&&pairingKey)load().catch(e=>disconnected(e.message));else disconnected();
+$('#disconnect').onclick=()=>{connectionGeneration++;clearTimeout(reconnectTimer);current=null;$('#player').pause();$('#player').removeAttribute('src');$('#player').load();serverUrl='';pairingKey='';connectionStore.clear();$('#connection').close();disconnected()};
+$('#connection-form').onsubmit=async e=>{e.preventDefault();connectionGeneration++;clearTimeout(reconnectTimer);let oldUrl=serverUrl,oldKey=pairingKey;try{let u=new URL($('#server-url').value);if(u.protocol!=='https:'&&!(localHost&&u.protocol==='http:'&&['127.0.0.1','localhost'].includes(u.hostname)))throw Error('Use an HTTPS PC address.');if(u.username||u.password||u.search||u.hash||!['','/'].includes(u.pathname))throw Error('Enter only the server address, with no path.');serverUrl=u.origin;pairingKey=$('#pairing-key').value.trim();$('#connection-status').textContent='Connecting…';await load();const stored=connectionStore.save(serverUrl,pairingKey,$('#remember-device').checked);if(!stored){$('#connection-status').textContent='Connected, but this browser blocked saving the connection. You can watch in this tab.';return}$('#connection-status').textContent='Connected.';$('#connection').close();if(!items.length)openSetup()}catch(e){serverUrl=oldUrl;pairingKey=oldKey;$('#connection-status').textContent=e.message;if(!connected)scheduleReconnect()}};
+if(serverUrl&&pairingKey){disconnected('Connecting to your PC…');reconnect()}else disconnected();
