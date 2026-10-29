@@ -12,3 +12,8 @@ videos/
 *.mov
 *.webm
 *.m4v
+
+pairing.key
+connection.json
+node_modules/
+.wrangler/

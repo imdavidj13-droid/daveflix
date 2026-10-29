@@ -1,8 +1,20 @@
-import json, sqlite3, pathlib, re, mimetypes, shutil, webbrowser
+import json, sqlite3, pathlib, re, mimetypes, webbrowser, secrets, hmac, sys
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse, parse_qs
 ROOT=pathlib.Path(__file__).resolve().parent
 DB=ROOT/'daveflix.db'
+CONFIG=ROOT/'connection.json'
+KEY_FILE=ROOT/'pairing.key'
+ALLOWED_ORIGINS={'http://127.0.0.1:8787','http://localhost:8787'}
+TOKEN=''
+def connection_init():
+ global TOKEN
+ if not KEY_FILE.exists(): KEY_FILE.write_text(secrets.token_urlsafe(32))
+ TOKEN=KEY_FILE.read_text().strip()
+ if CONFIG.exists():
+  origin=json.loads(CONFIG.read_text()).get('website_origin','')
+  if origin: ALLOWED_ORIGINS.add(origin)
+
 def db():
  c=sqlite3.connect(DB); c.row_factory=sqlite3.Row; return c
 def init():
@@ -21,11 +33,36 @@ def scan(folder):
    c.execute('INSERT INTO media(path,title,series,season,episode) VALUES(?,?,?,?,?) ON CONFLICT(path) DO UPDATE SET available=1,title=excluded.title,series=excluded.series,season=excluded.season,episode=excluded.episode',(str(f.resolve()),title,series,int(m[2]) if m else 0,int(m[3]) if m else 0))
  return len(files)
 class Handler(BaseHTTPRequestHandler):
+ def log_message(self,fmt,*args):
+  # Native media requests contain a pairing key. Never log query strings.
+  print('%s %s' % (self.command,urlparse(self.path).path))
+ def end_headers(self):
+  origin=self.headers.get('Origin')
+  if origin in ALLOWED_ORIGINS:
+   self.send_header('Access-Control-Allow-Origin',origin)
+   self.send_header('Vary','Origin')
+   self.send_header('Access-Control-Expose-Headers','Content-Range,Accept-Ranges,Content-Length')
+  self.send_header('Cache-Control','no-store')
+  self.send_header('Referrer-Policy','no-referrer')
+  super().end_headers()
+ def authorized(self):
+  origin=self.headers.get('Origin')
+  if origin and origin not in ALLOWED_ORIGINS:
+   self.reply({'error':'Website address not allowed. Configure this website origin on your PC.'},403); return False
+  supplied=self.headers.get('Authorization','').removeprefix('Bearer ') or parse_qs(urlparse(self.path).query).get('key',[''])[0]
+  if not TOKEN or not hmac.compare_digest(supplied,TOKEN):
+   self.reply({'error':'Pairing key missing or incorrect.'},401); return False
+  return True
+ def do_OPTIONS(self):
+  if self.headers.get('Origin') not in ALLOWED_ORIGINS: return self.reply({'error':'Origin rejected'},403)
+  self.send_response(204)
+  self.send_header('Access-Control-Allow-Methods','GET, POST, OPTIONS')
+  self.send_header('Access-Control-Allow-Headers','Authorization,Content-Type,Range')
+  self.end_headers()
  def reply(self,data,status=200):
   b=json.dumps(data).encode(); self.send_response(status); self.send_header('Content-Type','application/json'); self.send_header('Content-Length',str(len(b))); self.end_headers(); self.wfile.write(b)
  def do_POST(self):
-  # The first version accepts changes only from its own local browser origin.
-  if self.headers.get('Origin') not in (None,'http://127.0.0.1:8787','http://localhost:8787'): return self.reply({'error':'Origin rejected'},403)
+  if not self.authorized(): return
   try:
    size=int(self.headers.get('Content-Length','0'))
    if size>10000: raise ValueError('Request too large')
@@ -40,6 +77,7 @@ class Handler(BaseHTTPRequestHandler):
   except Exception as e: self.reply({'error':str(e)},400)
  def do_GET(self):
   route=urlparse(self.path).path
+  if route.startswith(('/api/','/stream/','/subtitle/')) and not self.authorized(): return
   if route=='/api/library':
    with db() as c:
     rows=[dict(r) for r in c.execute('SELECT id,title,series,season,episode,position,duration,saved FROM media WHERE available=1 ORDER BY series,season,episode,title')]; s=c.execute("SELECT value FROM settings WHERE key='folder'").fetchone()
@@ -80,4 +118,15 @@ class Handler(BaseHTTPRequestHandler):
      self.wfile.write(chunk); remaining-=len(chunk)
   except (BrokenPipeError,ConnectionResetError): pass
 if __name__=='__main__':
- init(); print('DAVEFLIX is running at http://127.0.0.1:8787 — keep this window open.'); webbrowser.open('http://127.0.0.1:8787'); ThreadingHTTPServer(('127.0.0.1',8787),Handler).serve_forever()
+ if '--configure' in sys.argv:
+  origin=input('Paste your deployed DAVEFLIX website URL: ').strip().rstrip('/')
+  u=urlparse(origin)
+  if u.scheme!='https' or not u.netloc or u.path or u.query or u.fragment or u.username:
+   raise SystemExit('Enter only the HTTPS website origin, for example https://daveflix.example.workers.dev')
+  CONFIG.write_text(json.dumps({'website_origin':origin},indent=2))
+ connection_init(); init()
+ print('DAVEFLIX PC server: http://127.0.0.1:8787')
+ print('Pairing key (keep private): '+TOKEN)
+ print('Keep this window open while watching.')
+ webbrowser.open('http://127.0.0.1:8787')
+ ThreadingHTTPServer(('127.0.0.1',8787),Handler).serve_forever()

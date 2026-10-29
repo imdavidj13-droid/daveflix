@@ -1,0 +1,6 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "daveflix",
+  "compatibility_date": "2026-10-29",
+  "assets": { "directory": "./public" }
+}
